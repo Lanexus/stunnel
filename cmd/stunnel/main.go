@@ -55,7 +55,7 @@ func main() {
 	rootCmd.Flags().StringVarP(&port, "port", "p", "3000", "Port to expose")
 	rootCmd.Flags().BoolVar(&shell, "shell", false, "Interactive shell")
 	rootCmd.Flags().BoolVarP(&generate, "generate", "g", false, "Generate secret")
-	rootCmd.Flags().StringVar(&signalingServer, "signaling", "http://localhost:8080", "Signaling server address")
+	rootCmd.Flags().StringVar(&signalingServer, "signaling", "http://93.177.100.9:8080", "Signaling server address")
 
 	rootCmd.Execute()
 }

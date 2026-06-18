@@ -1,42 +1,65 @@
 package main
 
 import (
-	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
+type PeerInfo struct {
+	IP        string `json:"ip"`
+	Port      string `json:"port"`
+	Timestamp int64  `json:"ts"`
+}
+
 type Client struct {
-	ID     string
-	Secret string
-	Conn   net.Conn
+	ID       string
+	Secret   string
+	Conn     net.Conn
 	IsServer bool
 }
 
-type Relay struct {
-	addr    string
+type Server struct {
+	// HTTP signaling
+	peers map[string]*PeerInfo
+	mu    sync.RWMutex
+	
+	// TCP relay
 	clients map[string]*Client
-	mu      sync.RWMutex
+	clientsMu sync.RWMutex
 }
 
-func NewRelay(addr string) *Relay {
-	return &Relay{
-		addr:    addr,
+func NewServer() *Server {
+	return &Server{
+		peers:   make(map[string]*PeerInfo),
 		clients: make(map[string]*Client),
 	}
 }
 
-func (r *Relay) Start() error {
-	ln, err := net.Listen("tcp", r.addr)
+func (s *Server) StartHTTP(addr string) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/register", s.handleRegister)
+	mux.HandleFunc("/lookup/", s.handleLookup)
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/", s.handleRoot)
+
+	log.Printf("HTTP signaling listening on %s", addr)
+	return http.ListenAndServe(addr, mux)
+}
+
+func (s *Server) StartTCP(addr string) error {
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	log.Printf("Relay listening on %s", ln.Addr())
+	log.Printf("TCP relay listening on %s", addr)
 
 	for {
 		conn, err := ln.Accept()
@@ -44,24 +67,102 @@ func (r *Relay) Start() error {
 			log.Printf("Accept error: %v", err)
 			continue
 		}
-		go r.handleConnection(conn)
+		go s.handleTCPConnection(conn)
 	}
 }
 
-func (r *Relay) handleConnection(conn net.Conn) {
-	defer conn.Close()
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"name":    "stunnel",
+		"version": "0.5.0",
+		"status":  "ok",
+		"peers":   len(s.peers),
+		"clients": len(s.clients),
+	})
+}
 
-	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		log.Printf("Read error: %v", err)
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	line = strings.TrimSpace(line)
-	parts := strings.SplitN(line, " ", 2)
+	var info PeerInfo
+	if err := json.NewDecoder(r.Body).Decode(&info); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	secret := r.URL.Query().Get("secret")
+	if secret == "" {
+		http.Error(w, "Secret required", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	s.peers[secret] = &info
+	s.mu.Unlock()
+
+	go s.cleanOldEntries()
+
+	log.Printf("Registered peer: %s:%s (secret: %s)", info.IP, info.Port, secret)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
+	secret := r.URL.Path[len("/lookup/"):]
+	if secret == "" {
+		http.Error(w, "Secret required", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	info, exists := s.peers[secret]
+	s.mu.RUnlock()
+
+	if !exists {
+		http.Error(w, "Peer not found", http.StatusNotFound)
+		return
+	}
+
+	if time.Now().Unix()-info.Timestamp > 300 {
+		s.mu.Lock()
+		delete(s.peers, secret)
+		s.mu.Unlock()
+		http.Error(w, "Peer expired", http.StatusNotFound)
+		return
+	}
+
+	log.Printf("Lookup peer: %s -> %s:%s", secret, info.IP, info.Port)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(info)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "ok",
+		"peers":  len(s.peers),
+	})
+}
+
+func (s *Server) handleTCPConnection(conn net.Conn) {
+	defer conn.Close()
+
+	// Read first message to determine type
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return
+	}
+
+	msg := strings.TrimSpace(string(buf[:n]))
+	parts := strings.SplitN(msg, " ", 2)
 	if len(parts) != 2 {
-		log.Printf("Invalid command: %s", line)
 		conn.Write([]byte("ERROR Invalid command\n"))
 		return
 	}
@@ -71,86 +172,97 @@ func (r *Relay) handleConnection(conn net.Conn) {
 
 	switch command {
 	case "REGISTER":
-		r.handleRegister(conn, secret)
+		s.handleTCPRegister(conn, secret)
 	case "CONNECT":
-		r.handleConnect(conn, secret)
+		s.handleTCPConnect(conn, secret)
 	default:
-		log.Printf("Unknown command: %s", command)
 		conn.Write([]byte("ERROR Unknown command\n"))
 	}
 }
 
-func (r *Relay) handleRegister(conn net.Conn, secret string) {
+func (s *Server) handleTCPRegister(conn net.Conn, secret string) {
 	client := &Client{
 		Secret:   secret,
 		Conn:     conn,
 		IsServer: true,
 	}
 
-	r.mu.Lock()
-	r.clients[secret] = client
-	r.mu.Unlock()
+	s.clientsMu.Lock()
+	s.clients[secret] = client
+	s.clientsMu.Unlock()
 
-	log.Printf("Server registered with secret: %s", secret[:8]+"...")
+	log.Printf("TCP server registered: %s", secret)
 	conn.Write([]byte("OK Registered\n"))
 
-	// Keep connection alive and wait for client
+	// Keep connection alive
 	buf := make([]byte, 1)
 	for {
 		_, err := conn.Read(buf)
 		if err != nil {
-			log.Printf("Server disconnected: %s", secret[:8]+"...")
-			r.mu.Lock()
-			delete(r.clients, secret)
-			r.mu.Unlock()
+			log.Printf("TCP server disconnected: %s", secret)
+			s.clientsMu.Lock()
+			delete(s.clients, secret)
+			s.clientsMu.Unlock()
 			return
 		}
 	}
 }
 
-func (r *Relay) handleConnect(conn net.Conn, secret string) {
-	r.mu.RLock()
-	server, exists := r.clients[secret]
-	r.mu.RUnlock()
+func (s *Server) handleTCPConnect(conn net.Conn, secret string) {
+	s.clientsMu.RLock()
+	server, exists := s.clients[secret]
+	s.clientsMu.RUnlock()
 
 	if !exists {
-		log.Printf("No server found for secret: %s", secret[:8]+"...")
+		log.Printf("No TCP server found: %s", secret)
 		conn.Write([]byte("ERROR No server found\n"))
 		return
 	}
 
-	log.Printf("Client connecting to server: %s", secret[:8]+"...")
-	
-	// Notify server
+	log.Printf("TCP client connecting: %s", secret)
 	server.Conn.Write([]byte("CLIENT_CONNECTED\n"))
-	
-	// Notify client
 	conn.Write([]byte("OK Connected\n"))
 
 	// Bridge connections
 	bridge(conn, server.Conn)
 }
 
+func (s *Server) cleanOldEntries() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().Unix()
+	for secret, info := range s.peers {
+		if now-info.Timestamp > 300 {
+			delete(s.peers, secret)
+		}
+	}
+}
+
 func bridge(a, b net.Conn) {
 	done := make(chan struct{})
-	
 	go func() {
 		io.Copy(b, a)
 		close(done)
 	}()
-	
 	io.Copy(a, b)
 	<-done
 }
 
 func main() {
-	addr := ":7000"
+	httpAddr := ":8080"
+	tcpAddr := ":7000"
+
 	if len(os.Args) > 1 {
-		addr = os.Args[1]
+		httpAddr = ":" + os.Args[1]
+		tcpAddr = ":" + os.Args[1]
 	}
+
+	server := NewServer()
+
+	go server.StartTCP(tcpAddr)
 	
-	relay := NewRelay(addr)
-	if err := relay.Start(); err != nil {
+	if err := server.StartHTTP(httpAddr); err != nil {
 		log.Fatal(err)
 	}
 }
