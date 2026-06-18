@@ -1,53 +1,46 @@
 # Stunnel
 
-Connect like there is no firewall. Install once, connect anytime.
+Connect like there is no firewall. Both sides connect OUTBOUND to relay. No ports needed.
 
-## Quick Deploy (One Command)
+## Quick Start
 
-### Install on VPS
+### 1. On VPS (run relay)
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lanexus/stunnel/master/deploy.sh)"
+# Download relay
+wget https://github.com/Lanexus/stunnel/releases/latest/download/relay-linux-amd64 -O /usr/local/bin/relay
+chmod +x /usr/local/bin/relay
+
+# Run relay
+relay 7000
 ```
 
-### Connect from anywhere
+### 2. On Server (expose local service)
 ```bash
-S="your-secret" bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lanexus/stunnel/master/deploy.sh)"
+# Install
+curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | bash
+
+# Install as service (connects to relay)
+stunnel server --install -s <secret> -r VPS_IP:7000
 ```
 
-### Uninstall
+### 3. On Client (connect)
 ```bash
-UNDO=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lanexus/stunnel/master/deploy.sh)"
+# Install
+curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | bash
+
+# Connect
+stunnel connect -s <secret> -r VPS_IP:7000
 ```
 
 ## How It Works
 
 ```
-[VPS] ← stunnel server (persistent, systemd)
-  ↓
-[You] ← stunnel connect -s secret
+[Server] → OUTBOUND → [Relay on VPS] ← OUTBOUND ← [Client]
+   ↓                      ↓                      ↓
+ local:3000          matches by secret         stdin/stdout
 ```
 
-## Manual Usage
-
-### 1. Install on VPS
-
-```bash
-# Download stunnel
-curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | bash
-
-# Install as service
-stunnel server --install
-```
-
-### 2. Connect from anywhere
-
-```bash
-# Install client
-curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | bash
-
-# Connect
-stunnel connect -s <secret>
-```
+Both sides connect OUTBOUND to the relay. No inbound ports needed on server or client.
 
 ## Commands
 
@@ -55,56 +48,27 @@ stunnel connect -s <secret>
 # Generate secret
 stunnel server -g
 
-# Run server (foreground)
-stunnel server -s <secret> -p 3000
+# Run relay (on VPS)
+relay 7000
 
-# Install as service (persistent)
-stunnel server --install -s <secret>
+# Expose local service (connects to relay)
+stunnel server -s <secret> -r VPS_IP:7000 -p 3000
 
-# Connect
-stunnel connect -s <secret> -a <server-ip>:3000
+# Install as service
+stunnel server --install -s <secret> -r VPS_IP:7000
 
-# Connect with shell
-stunnel connect -s <secret> -a <server-ip>:3000 --shell
+# Connect (connects to relay)
+stunnel connect -s <secret> -r VPS_IP:7000
 
 # Uninstall service
 stunnel server --uninstall
 ```
 
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `S` | Secret key for connection |
-| `X` | Predefined secret for installation |
-| `PORT` | Port to expose (default: 3000) |
-| `UNDO` | Set to 1 to uninstall |
-| `SERVER` | Server address for connection |
-
 ## Manage Service
 
 ```bash
-# Check status
 systemctl status stunnel
-
-# Restart
 systemctl restart stunnel
-
-# Stop
 systemctl stop stunnel
-
-# View logs
 journalctl -u stunnel -f
-```
-
-## Build
-
-```bash
-make build
-```
-
-## Test
-
-```bash
-make test
 ```
