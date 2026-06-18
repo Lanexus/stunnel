@@ -5,7 +5,7 @@ A TCP tunnel tool for exposing local services through a relay server.
 ## Quick Install
 
 ```bash
-curl -sL https://raw.githubusercontent.com/lanexus/stunnel/main/install.sh | bash
+curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | bash
 ```
 
 ## Quick Start (No VPS Needed!)
