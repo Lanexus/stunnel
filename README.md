@@ -1,6 +1,6 @@
 # Stunnel
 
-Connect like there is no firewall. Securely.
+Connect like there is no firewall. No VPS needed.
 
 ## Quick Install
 
@@ -10,76 +10,61 @@ curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | b
 
 ## Usage
 
-### Generate Secret
+### Server (expose local service)
 ```bash
+stunnel -l -p 3000
+```
+
+Output:
+```
+  ╔══════════════════════════════════════╗
+  ║       STUNNEL SERVER                 ║
+  ╚══════════════════════════════════════╝
+
+  Secret: nGW_8dn8n24
+  Port:   3000
+
+  Starting tunnel...
+
+  ╔══════════════════════════════════════╗
+  ║       TUNNEL ACTIVE                  ║
+  ╚══════════════════════════════════════╝
+
+  URL: https://abc123.trycloudflare.com
+
+  Share this URL to access your service
+```
+
+### Client (access the service)
+Just open the URL in browser, or:
+```bash
+curl https://abc123.trycloudflare.com
+```
+
+## Commands
+
+```bash
+# Expose port 3000
+stunnel -l -p 3000
+
+# Expose with custom secret
+stunnel -l -p 3000 -s mysecret
+
+# Generate secret
 stunnel -g
-# Output: G1HfImJCnQB7fV0M
-```
 
-### Listen (Server)
-```bash
-stunnel -s G1HfImJCnQB7fV0M -l
-```
-
-### Connect (Client)
-```bash
-stunnel -s G1HfImJCnQB7fV0M
-```
-
-### Interactive Shell
-```bash
-# Server (listen with shell)
-stunnel -s G1HfImJCnQB7fV0M -l --shell
-
-# Client (connect with shell)
-stunnel -s G1HfImJCnQB7fV0M --shell
-```
-
-### Port Forwarding
-```bash
-# Server (listen, forward port 22)
-stunnel -s G1HfImJCnQB7fV0M -l -p 22
-
-# Client (connect, forward port 22)
-stunnel -s G1HfImJCnQB7fV0M -p 22
+# Interactive shell
+stunnel -l --shell
 ```
 
 ## How It Works
 
 ```
-[Server] → Relay Server ← [Client]
-   ↓           ↓           ↓
-  -s secret  matches    -s secret
-   ↓           ↓           ↓
-   └───────────┴───────────┘
-           Connected!
+[Your Computer] → Cloudflare Tunnel → [Internet]
+   (local:3000)    (*.trycloudflare.com)
 ```
 
-Both users use the same secret. The relay server matches them automatically.
-
-## Run Your Own Relay
-
-```bash
-# Build relay
-go build -o relay ./cmd/relay/
-
-# Run relay on port 7000
-./relay :7000
-```
-
-Then use custom relay:
-```bash
-stunnel -s secret -l -r your-server:7000
-stunnel -s secret -r your-server:7000
-```
-
-## Features
-
-- **Simple** - Just one command with a secret
-- **Secure** - End-to-end encrypted
-- **Bypass Firewall** - Works through NAT/Firewall
-- **Multiple Modes** - Shell, port forwarding, pipe
-- **Auto Match** - No IP/Port needed, just secret
+No VPS needed. No port forwarding. Just works.
 
 ## Build
 
