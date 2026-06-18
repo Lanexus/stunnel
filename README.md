@@ -2,50 +2,68 @@
 
 A TCP tunnel tool for exposing local services through a relay server.
 
-## Usage
+## How It Works
 
-### 1. Start server (on VPS)
+```
+[Local Machine] ──→ [Relay Server] ←── [Remote Machine]
+   (serve)            (bridge)           (connect)
+```
+
+Both machines connect to the relay. The relay matches them by secret and bridges the connection.
+
+## Quick Start
+
+### 1. Run relay server (on VPS)
 
 ```bash
-stunnel serve
+stunnel relay --addr :7000
+```
+
+### 2. Expose local service
+
+```bash
+stunnel serve --relay VPS_IP:7000 --local :3000
 ```
 
 Output:
 ```
   ╔══════════════════════════════════════╗
-  ║       STUNNEL SERVER STARTED         ║
+  ║       STUNNEL SERVE STARTED          ║
   ╚══════════════════════════════════════╝
 
-  Key: MTcyLjI1LjY3LjIwMjo4MDgwOnJJVHJQT2lmMU4zQ0tRenNPdkE1d3c
+  Secret: xK9mP2qR
 
-  On your local machine, run:
-  stunnel connect MTcyLjI1LjY3LjIwMjo4MDgwOnJJVHJQT2lmMU4zQ0tRenNPdkE1d3c --local :PORT
+  On another machine, run:
+  stunnel connect --relay VPS_IP:7000 --secret xK9mP2qR
 ```
 
-### 2. Connect from local machine
-
-Copy the key from step 1 and run:
+### 3. Connect from anywhere
 
 ```bash
-stunnel connect <PASTE_KEY_HERE> --local :3000
+stunnel connect --relay VPS_IP:7000 --secret xK9mP2qR
 ```
 
-This exposes your local port 3000 through the server's public port.
+This pipes your stdin/stdout through the tunnel to the local service.
 
-### 3. Access from anywhere
+## Commands
 
-```bash
-curl http://vps-ip:8080
-```
+### `stunnel relay`
+Run the relay server (typically on a VPS).
 
-## Options
+- `--addr` - listen address (default `:7000`)
 
 ### `stunnel serve`
-- `--addr` - address for client connections (default `:7000`)
-- `--public-addr` - public-facing address (default `:8080`)
+Expose a local service through the relay.
 
-### `stunnel connect <key>`
+- `--relay` - relay server address (default `localhost:7000`)
 - `--local` - local service to expose (default `localhost:3000`)
+- `--secret` - shared secret (auto-generated if empty)
+
+### `stunnel connect`
+Connect to a served tunnel.
+
+- `--relay` - relay server address (default `localhost:7000`)
+- `--secret` - shared secret (required)
 
 ## Build
 

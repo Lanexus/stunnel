@@ -7,10 +7,8 @@ import (
 	"log"
 	"net"
 	"os"
-	"strings"
 
-	"stunnel/internal/client"
-	"stunnel/internal/server"
+	"stunnel/internal/relay"
 
 	"github.com/spf13/cobra"
 )
@@ -25,6 +23,7 @@ func main() {
 	}
 
 	rootCmd.AddCommand(
+		newRelayCmd(),
 		newServeCmd(),
 		newConnectCmd(),
 		newVersionCmd(),
@@ -36,96 +35,93 @@ func main() {
 }
 
 func generateSecret() string {
-	b := make([]byte, 16)
+	b := make([]byte, 8)
 	rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func encodeKey(host, port, secret string) string {
-	raw := fmt.Sprintf("%s:%s:%s", host, port, secret)
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
-}
-
-func decodeKey(key string) (host, port, secret string, err error) {
-	raw, err := base64.RawURLEncoding.DecodeString(key)
-	if err != nil {
-		return "", "", "", fmt.Errorf("invalid key")
-	}
-	parts := strings.SplitN(string(raw), ":", 3)
-	if len(parts) != 3 {
-		return "", "", "", fmt.Errorf("invalid key format")
-	}
-	return parts[0], parts[1], parts[2], nil
-}
-
-func newServeCmd() *cobra.Command {
+func newRelayCmd() *cobra.Command {
 	var addr string
-	var publicAddr string
 
 	cmd := &cobra.Command{
-		Use:   "serve",
-		Short: "Start tunnel server and print connection key",
+		Use:   "relay",
+		Short: "Start relay server (run on VPS)",
 		Run: func(cmd *cobra.Command, args []string) {
-			secret := generateSecret()
-
-			// Get public IP
-			host := getPublicIP()
-			pubPort := extractPort(publicAddr)
-
-			key := encodeKey(host, pubPort, secret)
-
-			srv := server.New(addr, publicAddr, secret)
-
-			fmt.Println()
-			fmt.Println("  ╔══════════════════════════════════════╗")
-			fmt.Println("  ║       STUNNEL SERVER STARTED         ║")
-			fmt.Println("  ╚══════════════════════════════════════╝")
-			fmt.Println()
-			fmt.Printf("  Key: %s\n", key)
-			fmt.Println()
-			fmt.Println("  On your local machine, run:")
-			fmt.Printf("  stunnel connect %s --local :PORT\n", key)
-			fmt.Println()
-
-			if err := srv.Start(); err != nil {
+			r := relay.New(addr)
+			log.Printf("starting relay on %s", addr)
+			if err := r.Start(); err != nil {
 				log.Fatal(err)
 			}
 		},
 	}
 
-	cmd.Flags().StringVar(&addr, "addr", ":7000", "Server listen address")
-	cmd.Flags().StringVar(&publicAddr, "public-addr", ":8080", "Public listener address")
+	cmd.Flags().StringVar(&addr, "addr", ":7000", "Relay listen address")
+
+	return cmd
+}
+
+func newServeCmd() *cobra.Command {
+	var relayAddr string
+	var localAddr string
+	var secret string
+
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Expose local service through relay",
+		Run: func(cmd *cobra.Command, args []string) {
+			if secret == "" {
+				secret = generateSecret()
+			}
+
+			fmt.Println()
+			fmt.Println("  ╔══════════════════════════════════════╗")
+			fmt.Println("  ║       STUNNEL SERVE STARTED          ║")
+			fmt.Println("  ╚══════════════════════════════════════╝")
+			fmt.Println()
+			fmt.Printf("  Secret: %s\n", secret)
+			fmt.Println()
+			fmt.Println("  On another machine, run:")
+			fmt.Printf("  stunnel connect --relay %s --secret %s\n", relayAddr, secret)
+			fmt.Println()
+
+			sc := relay.NewServeClient(relayAddr, secret, localAddr)
+			if err := sc.Connect(); err != nil {
+				log.Fatal(err)
+			}
+		},
+	}
+
+	cmd.Flags().StringVar(&relayAddr, "relay", "localhost:7000", "Relay server address")
+	cmd.Flags().StringVar(&localAddr, "local", "localhost:3000", "Local service to expose")
+	cmd.Flags().StringVar(&secret, "secret", "", "Shared secret (auto-generated if empty)")
 
 	return cmd
 }
 
 func newConnectCmd() *cobra.Command {
-	var localAddr string
+	var relayAddr string
+	var secret string
 
 	cmd := &cobra.Command{
-		Use:   "connect [key]",
-		Short: "Connect to tunnel server using key",
-		Args:  cobra.ExactArgs(1),
+		Use:   "connect",
+		Short: "Connect to a served tunnel",
 		Run: func(cmd *cobra.Command, args []string) {
-			key := args[0]
-			host, port, secret, err := decodeKey(key)
-			if err != nil {
-				log.Fatalf("invalid key: %v", err)
+			if secret == "" {
+				log.Fatal("--secret is required")
 			}
 
-			serverAddr := net.JoinHostPort(host, port)
+			fmt.Printf("Connecting to relay %s ...\n", relayAddr)
 
-			fmt.Printf("Connecting to %s ...\n", serverAddr)
-			fmt.Printf("Exposing local %s\n", localAddr)
-
-			c := client.New(serverAddr, secret, localAddr)
-			if err := c.Connect(); err != nil {
+			cc := relay.NewConnectClient(relayAddr, secret)
+			if err := cc.Connect(); err != nil {
 				log.Fatal(err)
 			}
 		},
 	}
 
-	cmd.Flags().StringVar(&localAddr, "local", "localhost:3000", "Local service address to expose")
+	cmd.Flags().StringVar(&relayAddr, "relay", "localhost:7000", "Relay server address")
+	cmd.Flags().StringVar(&secret, "secret", "", "Shared secret (required)")
+	cmd.MarkFlagRequired("secret")
 
 	return cmd
 }
@@ -137,14 +133,6 @@ func getPublicIP() string {
 	}
 	defer conn.Close()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
-}
-
-func extractPort(addr string) string {
-	_, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "8080"
-	}
-	return port
 }
 
 func newVersionCmd() *cobra.Command {
