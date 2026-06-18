@@ -11,12 +11,15 @@ import (
 	"syscall"
 
 	"stunnel/internal/cloudflare"
+	"stunnel/internal/daemon"
+	"stunnel/internal/netcat"
 	"stunnel/internal/relay"
+	"stunnel/internal/transfer"
 
 	"github.com/spf13/cobra"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 func main() {
 	rootCmd := &cobra.Command{
@@ -30,6 +33,9 @@ func main() {
 		newServeCmd(),
 		newConnectCmd(),
 		newTunnelCmd(),
+		newNetcatCmd(),
+		newFileCmd(),
+		newStopCmd(),
 		newVersionCmd(),
 	)
 
@@ -171,7 +177,6 @@ func newTunnelCmd() *cobra.Command {
 			fmt.Println("  Press Ctrl+C to stop")
 			fmt.Println()
 
-			// Wait for interrupt
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 			<-sigCh
@@ -183,6 +188,74 @@ func newTunnelCmd() *cobra.Command {
 	cmd.Flags().StringVar(&localAddr, "local", "localhost:3000", "Local service to expose")
 
 	return cmd
+}
+
+func newNetcatCmd() *cobra.Command {
+	var listen bool
+	var execCmd string
+
+	cmd := &cobra.Command{
+		Use:   "nc [address]",
+		Short: "Netcat mode - connect or listen",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			address := args[0]
+
+			nc := netcat.New(address, address, listen, execCmd)
+			if err := nc.Run(); err != nil {
+				log.Fatal(err)
+			}
+		},
+	}
+
+	cmd.Flags().BoolVarP(&listen, "listen", "l", false, "Listen mode")
+	cmd.Flags().StringVarP(&execCmd, "exec", "e", "", "Execute command on connection")
+
+	return cmd
+}
+
+func newFileCmd() *cobra.Command {
+	var listen bool
+	var dest string
+
+	cmd := &cobra.Command{
+		Use:   "file [address] [path]",
+		Short: "File transfer mode",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			address := args[0]
+			path := args[1]
+
+			ft := transfer.New(address, dest, listen)
+			if listen {
+				if err := ft.Receive(); err != nil {
+					log.Fatal(err)
+				}
+			} else {
+				ft.SetLocalPath(path)
+				if err := ft.Send(); err != nil {
+					log.Fatal(err)
+				}
+			}
+		},
+	}
+
+	cmd.Flags().BoolVarP(&listen, "listen", "l", false, "Listen mode (receive)")
+	cmd.Flags().StringVarP(&dest, "dest", "d", "", "Destination directory")
+
+	return cmd
+}
+
+func newStopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop running daemon",
+		Run: func(cmd *cobra.Command, args []string) {
+			if err := daemon.StopDaemon(); err != nil {
+				log.Fatal(err)
+			}
+		},
+	}
 }
 
 func newVersionCmd() *cobra.Command {
