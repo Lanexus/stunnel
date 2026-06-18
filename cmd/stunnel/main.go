@@ -33,13 +33,14 @@ func main() {
 
 func newServerCmd() *cobra.Command {
 	var addr string
+	var publicAddr string
 	var secret string
 
 	cmd := &cobra.Command{
 		Use:   "server",
 		Short: "Start tunnel server",
 		Run: func(cmd *cobra.Command, args []string) {
-			srv := server.New(addr, secret)
+			srv := server.New(addr, publicAddr, secret)
 			log.Printf("starting server on %s", addr)
 			if err := srv.Start(); err != nil {
 				log.Fatal(err)
@@ -48,6 +49,7 @@ func newServerCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&addr, "addr", ":7000", "Server listen address")
+	cmd.Flags().StringVar(&publicAddr, "public-addr", ":8080", "Public listener address for user connections")
 	cmd.Flags().StringVar(&secret, "secret", "", "Shared secret (required)")
 	cmd.MarkFlagRequired("secret")
 

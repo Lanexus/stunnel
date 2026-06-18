@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -17,23 +18,34 @@ type Client struct {
 	Conn net.Conn
 }
 
-type Server struct {
-	addr      string
-	secret    string
-	listener  net.Listener
-	clients   map[string]*Client
-	mu        sync.RWMutex
-	tunnelIDs map[string]string
-	done      chan struct{}
+type pendingConn struct {
+	conn    net.Conn
+	connID  string
+	ready   chan struct{}
 }
 
-func New(addr, secret string) *Server {
+type Server struct {
+	addr       string
+	publicAddr string
+	secret     string
+	listener   net.Listener
+	pubLn      net.Listener
+	clients    map[string]*Client
+	mu         sync.RWMutex
+	tunnelIDs  map[string]string
+	pending    map[string]*pendingConn
+	done       chan struct{}
+}
+
+func New(addr, publicAddr, secret string) *Server {
 	return &Server{
-		addr:      addr,
-		secret:    secret,
-		clients:   make(map[string]*Client),
-		tunnelIDs: make(map[string]string),
-		done:      make(chan struct{}),
+		addr:       addr,
+		publicAddr: publicAddr,
+		secret:     secret,
+		clients:    make(map[string]*Client),
+		tunnelIDs:  make(map[string]string),
+		pending:    make(map[string]*pendingConn),
+		done:       make(chan struct{}),
 	}
 }
 
@@ -44,6 +56,17 @@ func (s *Server) Start() error {
 	}
 	s.listener = ln
 	log.Printf("server listening on %s", ln.Addr())
+
+	if s.publicAddr != "" {
+		pubLn, err := net.Listen("tcp", s.publicAddr)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("public listen: %w", err)
+		}
+		s.pubLn = pubLn
+		log.Printf("public listener on %s", pubLn.Addr())
+		go s.acceptPublic()
+	}
 
 	for {
 		conn, err := ln.Accept()
@@ -65,6 +88,16 @@ func (s *Server) Stop() {
 	if s.listener != nil {
 		s.listener.Close()
 	}
+	if s.pubLn != nil {
+		s.pubLn.Close()
+	}
+}
+
+func (s *Server) PublicAddr() net.Addr {
+	if s.pubLn == nil {
+		return nil
+	}
+	return s.pubLn.Addr()
 }
 
 func (s *Server) Addr() net.Addr {
@@ -72,6 +105,82 @@ func (s *Server) Addr() net.Addr {
 		return nil
 	}
 	return s.listener.Addr()
+}
+
+func (s *Server) acceptPublic() {
+	for {
+		conn, err := s.pubLn.Accept()
+		if err != nil {
+			select {
+			case <-s.done:
+				return
+			default:
+				log.Printf("public accept error: %v", err)
+				return
+			}
+		}
+		go s.handleUserConnection(conn)
+	}
+}
+
+func (s *Server) handleUserConnection(conn net.Conn) {
+	log.Printf("user connection from %s", conn.RemoteAddr())
+
+	s.mu.RLock()
+	var targetTunnelID string
+	for tunnelID, clientID := range s.tunnelIDs {
+		if _, ok := s.clients[clientID]; ok {
+			targetTunnelID = tunnelID
+			break
+		}
+	}
+	s.mu.RUnlock()
+
+	if targetTunnelID == "" {
+		log.Printf("no available tunnel")
+		conn.Close()
+		return
+	}
+
+	s.mu.RLock()
+	clientID := s.tunnelIDs[targetTunnelID]
+	client := s.clients[clientID]
+	s.mu.RUnlock()
+
+	if client == nil {
+		log.Printf("client not found for tunnel %s", targetTunnelID)
+		conn.Close()
+		return
+	}
+
+	connID := generateID()
+	pc := &pendingConn{conn: conn, connID: connID, ready: make(chan struct{})}
+
+	s.mu.Lock()
+	key := targetTunnelID + ":" + connID
+	s.pending[key] = pc
+	s.mu.Unlock()
+
+	protocol.Encode(client.Conn, protocol.Message{
+		Type: protocol.MsgNewTunnel,
+		Data: protocol.NewTunnelData{TunnelID: targetTunnelID, ConnID: connID},
+	})
+
+	select {
+	case <-pc.ready:
+	case <-time.After(30 * time.Second):
+		log.Printf("timeout waiting for data connection for tunnel %s conn %s", targetTunnelID, connID)
+		s.mu.Lock()
+		delete(s.pending, key)
+		s.mu.Unlock()
+		conn.Close()
+		return
+	}
+
+	go io.Copy(conn, pc.conn)
+	io.Copy(pc.conn, conn)
+	conn.Close()
+	pc.conn.Close()
 }
 
 func (s *Server) AssignTunnelID(conn net.Conn) string {
@@ -99,6 +208,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 	switch msg.Type {
 	case protocol.MsgAuth:
 		s.handleAuth(conn, msg.Data.(protocol.AuthData))
+	case protocol.MsgDataOpen:
+		s.handleDataOpen(conn, msg.Data.(protocol.DataOpenData))
 	default:
 		log.Printf("unexpected message type: %v", msg.Type)
 		conn.Close()
@@ -130,13 +241,39 @@ func (s *Server) handleAuth(conn net.Conn, data protocol.AuthData) {
 
 	log.Printf("client authenticated, tunnel: %s", tunnelID)
 
+	publicPort := 0
+	if s.pubLn != nil {
+		publicPort = s.pubLn.Addr().(*net.TCPAddr).Port
+	}
+
 	protocol.Encode(conn, protocol.Message{
 		Type: protocol.MsgAuthOK,
 		Data: protocol.AuthOKData{
 			TunnelID:   tunnelID,
-			PublicPort: 8080,
+			PublicPort: publicPort,
 		},
 	})
+}
+
+func (s *Server) handleDataOpen(conn net.Conn, data protocol.DataOpenData) {
+	conn.SetDeadline(time.Time{})
+
+	key := data.TunnelID + ":" + data.ConnID
+	s.mu.Lock()
+	pc, ok := s.pending[key]
+	if ok {
+		delete(s.pending, key)
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		log.Printf("no pending connection for tunnel %s conn %s", data.TunnelID, data.ConnID)
+		conn.Close()
+		return
+	}
+
+	pc.conn = conn
+	close(pc.ready)
 }
 
 func generateID() string {

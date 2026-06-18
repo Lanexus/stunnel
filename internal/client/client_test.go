@@ -18,7 +18,7 @@ func TestClientConnect(t *testing.T) {
 }
 
 func TestClientAuthHandshake(t *testing.T) {
-	srv := server.New("127.0.0.1:0", "testsecret")
+	srv := server.New("127.0.0.1:0", "", "testsecret")
 	go srv.Start()
 	defer srv.Stop()
 	time.Sleep(50 * time.Millisecond)
@@ -43,7 +43,7 @@ func TestClientAuthHandshake(t *testing.T) {
 }
 
 func TestClientAuthWrongSecret(t *testing.T) {
-	srv := server.New("127.0.0.1:0", "testsecret")
+	srv := server.New("127.0.0.1:0", "", "testsecret")
 	go srv.Start()
 	defer srv.Stop()
 	time.Sleep(50 * time.Millisecond)

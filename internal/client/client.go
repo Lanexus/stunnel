@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"stunnel/internal/protocol"
@@ -78,4 +79,31 @@ func (c *Client) handleMessages(conn net.Conn) error {
 
 func (c *Client) handleTunnel(tunnelID, connID string) {
 	log.Printf("tunnel %s conn %s -> local %s", tunnelID, connID, c.localAddr)
+
+	serverConn, err := net.DialTimeout("tcp", c.serverAddr, 5*time.Second)
+	if err != nil {
+		log.Printf("connect data channel: %v", err)
+		return
+	}
+	defer serverConn.Close()
+
+	protocol.Encode(serverConn, protocol.Message{
+		Type: protocol.MsgDataOpen,
+		Data: protocol.DataOpenData{TunnelID: tunnelID, ConnID: connID},
+	})
+
+	localConn, err := net.DialTimeout("tcp", c.localAddr, 5*time.Second)
+	if err != nil {
+		log.Printf("connect local: %v", err)
+		return
+	}
+	defer localConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		io.Copy(localConn, serverConn)
+		close(done)
+	}()
+	io.Copy(serverConn, localConn)
+	<-done
 }

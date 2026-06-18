@@ -9,14 +9,14 @@ import (
 )
 
 func TestServerStartStop(t *testing.T) {
-	srv := New(":0", "testsecret")
+	srv := New(":0", "", "testsecret")
 	go srv.Start()
 	time.Sleep(100 * time.Millisecond)
 	srv.Stop()
 }
 
 func TestServerAssignsTunnelID(t *testing.T) {
-	srv := New(":0", "testsecret")
+	srv := New(":0", "", "testsecret")
 	go srv.Start()
 	time.Sleep(100 * time.Millisecond)
 	defer srv.Stop()
@@ -35,7 +35,7 @@ func TestServerAssignsTunnelID(t *testing.T) {
 }
 
 func TestServerAuth(t *testing.T) {
-	srv := New(":0", "testsecret")
+	srv := New(":0", "", "testsecret")
 	go srv.Start()
 	time.Sleep(100 * time.Millisecond)
 	defer srv.Stop()
