@@ -27,6 +27,7 @@ func main() {
 	var generate bool
 	var install bool
 	var uninstall bool
+	var serverAddr string
 
 	rootCmd := &cobra.Command{
 		Use:   "stunnel",
@@ -83,12 +84,13 @@ func main() {
 				os.Exit(1)
 			}
 
-			runClient(secret, shell)
+			runClient(secret, shell, serverAddr)
 		},
 	}
 
 	clientCmd.Flags().StringVarP(&secret, "secret", "s", "", "Shared secret (required)")
 	clientCmd.Flags().BoolVar(&shell, "shell", false, "Interactive shell")
+	clientCmd.Flags().StringVarP(&serverAddr, "addr", "a", "", "Server address (e.g., 1.2.3.4:3000)")
 	clientCmd.MarkFlagRequired("secret")
 
 	rootCmd.AddCommand(serverCmd, clientCmd)
@@ -183,7 +185,7 @@ func handleServerConnection(conn net.Conn, secret string, shell bool) {
 	}
 }
 
-func runClient(secret string, shell bool) {
+func runClient(secret string, shell bool, serverAddr string) {
 	// For now, connect directly to server
 	// In a real implementation, we'd use signaling server
 	// For simplicity, we'll ask for server address
@@ -195,11 +197,13 @@ func runClient(secret string, shell bool) {
 	fmt.Println()
 	fmt.Printf("  Secret: %s\n", secret)
 	fmt.Println()
-	fmt.Println("  Enter server address (e.g., 1.2.3.4:3000):")
-	fmt.Print("  > ")
 
-	var serverAddr string
-	fmt.Scanln(&serverAddr)
+	// Get server address
+	if serverAddr == "" {
+		fmt.Println("  Enter server address (e.g., 1.2.3.4:3000):")
+		fmt.Print("  > ")
+		fmt.Scanln(&serverAddr)
+	}
 
 	fmt.Println()
 	fmt.Printf("  Connecting to %s...\n", serverAddr)
