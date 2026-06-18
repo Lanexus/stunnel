@@ -1,6 +1,6 @@
 # Stunnel
 
-A TCP tunnel tool for exposing local services through a relay server.
+Connect like there is no firewall. Securely.
 
 ## Quick Install
 
@@ -8,84 +8,82 @@ A TCP tunnel tool for exposing local services through a relay server.
 curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | bash
 ```
 
-## Quick Start (No VPS Needed!)
+## Usage
 
+### Generate Secret
 ```bash
-# Expose local service to the internet
-stunnel tunnel --local :3000
-
-# Output:
-#   URL: https://abc123.trycloudflare.com
-#   Share this URL to access your service
+stunnel -g
+# Output: G1HfImJCnQB7fV0M
 ```
 
-## Commands
-
-### `stunnel tunnel`
-Expose local service via Cloudflare Tunnel (free, no VPS needed).
-
+### Listen (Server)
 ```bash
-stunnel tunnel --local :3000
+stunnel -s G1HfImJCnQB7fV0M -l
 ```
 
-### `stunnel relay`
-Run relay server (on VPS).
-
+### Connect (Client)
 ```bash
-stunnel relay --addr :7000
+stunnel -s G1HfImJCnQB7fV0M
 ```
 
-### `stunnel serve`
-Expose local service through relay.
-
+### Interactive Shell
 ```bash
-stunnel serve --relay VPS_IP:7000 --local :3000
+# Server (listen with shell)
+stunnel -s G1HfImJCnQB7fV0M -l --shell
+
+# Client (connect with shell)
+stunnel -s G1HfImJCnQB7fV0M --shell
 ```
 
-### `stunnel connect`
-Connect to a served tunnel.
-
+### Port Forwarding
 ```bash
-stunnel connect --relay VPS_IP:7000 --secret KEY
+# Server (listen, forward port 22)
+stunnel -s G1HfImJCnQB7fV0M -l -p 22
+
+# Client (connect, forward port 22)
+stunnel -s G1HfImJCnQB7fV0M -p 22
 ```
 
-### `stunnel nc`
-Netcat mode - connect or listen.
+## How It Works
 
-```bash
-# Listen for connections
-stunnel nc -l :8080
-
-# Connect to address
-stunnel nc example.com:80
-
-# Execute command on connection
-stunnel nc -l :8080 -e "echo hello"
+```
+[Server] → Relay Server ← [Client]
+   ↓           ↓           ↓
+  -s secret  matches    -s secret
+   ↓           ↓           ↓
+   └───────────┴───────────┘
+           Connected!
 ```
 
-### `stunnel file`
-File transfer mode.
+Both users use the same secret. The relay server matches them automatically.
+
+## Run Your Own Relay
 
 ```bash
-# Send file
-stunnel file receiver:9090 myfile.txt
+# Build relay
+go build -o relay ./cmd/relay/
 
-# Receive file
-stunnel file -l :9090
+# Run relay on port 7000
+./relay :7000
 ```
 
-### `stunnel stop`
-Stop running daemon.
-
+Then use custom relay:
 ```bash
-stunnel stop
+stunnel -s secret -l -r your-server:7000
+stunnel -s secret -r your-server:7000
 ```
 
-## Build from Source
+## Features
+
+- **Simple** - Just one command with a secret
+- **Secure** - End-to-end encrypted
+- **Bypass Firewall** - Works through NAT/Firewall
+- **Multiple Modes** - Shell, port forwarding, pipe
+- **Auto Match** - No IP/Port needed, just secret
+
+## Build
 
 ```bash
-git clone https://github.com/lanexus/stunnel.git
-cd stunnel
 make build
 ```
 
@@ -94,17 +92,3 @@ make build
 ```bash
 make test
 ```
-
-## Architecture
-
-```
-Cloudflare Mode (Recommended):
-[Local:3000] → cloudflared → [Cloudflare] → [User]
-
-Relay Mode:
-[Local:3000] → stunnel serve → [VPS Relay] → stunnel connect → [User]
-```
-
-## License
-
-MIT

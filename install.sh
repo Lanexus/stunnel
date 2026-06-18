@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stunnel installer - works like gsocket
+# Stunnel installer
 # Usage: bash <(curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh)
 
 set -e
@@ -65,7 +65,7 @@ get_latest_version() {
     
     if [ -z "$version" ]; then
         # Fallback to hardcoded version
-        version="v0.2.0"
+        version="v0.3.0"
     fi
     
     echo "$version"
@@ -136,6 +136,9 @@ main() {
         done
     fi
     
+    # Generate secret
+    local secret=$($installdir/$BINARY -g)
+    
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║     ✓ STUNNEL INSTALLED!             ║${NC}"
@@ -144,9 +147,15 @@ main() {
     echo -e "  Binary:  ${GREEN}$installdir/$BINARY${NC}"
     echo ""
     echo -e "  ${YELLOW}Quick Start:${NC}"
-    echo -e "    stunnel tunnel --local :3000     # Expose via Cloudflare (free)"
-    echo -e "    stunnel relay --addr :7000       # Run relay server"
-    echo -e "    stunnel --help                   # Show all commands"
+    echo -e "    1. Generate secret:   ${GREEN}stunnel -g${NC}"
+    echo -e "    2. Listen (server):   ${GREEN}stunnel -s <secret> -l${NC}"
+    echo -e "    3. Connect (client):  ${GREEN}stunnel -s <secret>${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Your secret:${NC} ${GREEN}$secret${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Example:${NC}"
+    echo -e "    Server: stunnel -s $secret -l"
+    echo -e "    Client: stunnel -s $secret"
     echo ""
 }
 

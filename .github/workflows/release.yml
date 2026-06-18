@@ -22,7 +22,7 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Build
+      - name: Build stunnel
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -33,11 +33,24 @@ jobs:
           fi
           go build -o stunnel-${GOOS}-${GOARCH}${EXT} ./cmd/stunnel/
 
+      - name: Build relay
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then
+            EXT=".exe"
+          fi
+          go build -o relay-${GOOS}-${GOARCH}${EXT} ./cmd/relay/
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: stunnel-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: stunnel-*
+          path: |
+            stunnel-*
+            relay-*
 
   release:
     needs: build
