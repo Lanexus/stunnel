@@ -2,6 +2,12 @@
 
 A TCP tunnel tool for exposing local services through a relay server.
 
+## Quick Install
+
+```bash
+curl -sL https://raw.githubusercontent.com/lanexus/stunnel/main/install.sh | bash
+```
+
 ## Quick Start (No VPS Needed!)
 
 ```bash
@@ -75,9 +81,11 @@ Stop running daemon.
 stunnel stop
 ```
 
-## Build
+## Build from Source
 
 ```bash
+git clone https://github.com/lanexus/stunnel.git
+cd stunnel
 make build
 ```
 
@@ -96,3 +104,7 @@ Cloudflare Mode (Recommended):
 Relay Mode:
 [Local:3000] → stunnel serve → [VPS Relay] → stunnel connect → [User]
 ```
+
+## License
+
+MIT
