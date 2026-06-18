@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="lanexus/stunnel"
+REPO="Lanexus/stunnel"
 BINARY="stunnel"
 INSTALL_DIR="/usr/local/bin"
 
@@ -48,8 +48,17 @@ chmod +x "/tmp/$FILENAME"
 if [ -w "$INSTALL_DIR" ]; then
     mv "/tmp/$FILENAME" "$INSTALL_DIR/$BINARY"
 else
-    echo "Need sudo to install to $INSTALL_DIR"
-    sudo mv "/tmp/$FILENAME" "$INSTALL_DIR/$BINARY"
+    echo "Installing to ~/bin (no sudo needed)..."
+    mkdir -p ~/bin
+    mv "/tmp/$FILENAME" ~/bin/$BINARY
+    INSTALL_DIR=~/bin
+    
+    # Add to PATH if not already there
+    if [[ ":$PATH:" != *":$HOME/bin:"* ]]; then
+        echo 'export PATH=$PATH:~/bin' >> ~/.bashrc
+        echo 'export PATH=$PATH:~/bin' >> ~/.zshrc 2>/dev/null || true
+        export PATH=$PATH:~/bin
+    fi
 fi
 
 echo ""
