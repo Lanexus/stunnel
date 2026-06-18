@@ -137,7 +137,7 @@ main() {
     fi
     
     # Generate secret
-    local secret=$($installdir/$BINARY -g)
+    local secret=$($installdir/$BINARY server -g 2>/dev/null || openssl rand -base64 12 2>/dev/null || head -c 16 /dev/urandom | base64)
     
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════╗${NC}"
@@ -147,15 +147,15 @@ main() {
     echo -e "  Binary:  ${GREEN}$installdir/$BINARY${NC}"
     echo ""
     echo -e "  ${YELLOW}Quick Start:${NC}"
-    echo -e "    1. Generate secret:   ${GREEN}stunnel -g${NC}"
-    echo -e "    2. Listen (server):   ${GREEN}stunnel -s <secret> -l${NC}"
-    echo -e "    3. Connect (client):  ${GREEN}stunnel -s <secret>${NC}"
+    echo -e "    1. Generate secret:   ${GREEN}stunnel server -g${NC}"
+    echo -e "    2. Install service:   ${GREEN}stunnel server --install -s <secret>${NC}"
+    echo -e "    3. Connect:           ${GREEN}stunnel connect -s <secret>${NC}"
     echo ""
     echo -e "  ${YELLOW}Your secret:${NC} ${GREEN}$secret${NC}"
     echo ""
     echo -e "  ${YELLOW}Example:${NC}"
-    echo -e "    Server: stunnel -s $secret -l"
-    echo -e "    Client: stunnel -s $secret"
+    echo -e "    Server: stunnel server --install -s $secret"
+    echo -e "    Client: stunnel connect -s $secret"
     echo ""
 }
 
