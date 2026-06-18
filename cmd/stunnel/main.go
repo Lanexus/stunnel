@@ -7,7 +7,10 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"stunnel/internal/cloudflare"
 	"stunnel/internal/relay"
 
 	"github.com/spf13/cobra"
@@ -26,6 +29,7 @@ func main() {
 		newRelayCmd(),
 		newServeCmd(),
 		newConnectCmd(),
+		newTunnelCmd(),
 		newVersionCmd(),
 	)
 
@@ -133,6 +137,52 @@ func getPublicIP() string {
 	}
 	defer conn.Close()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
+}
+
+func newTunnelCmd() *cobra.Command {
+	var localAddr string
+
+	cmd := &cobra.Command{
+		Use:   "tunnel",
+		Short: "Expose local service via Cloudflare Tunnel (no VPS needed)",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println()
+			fmt.Println("  ╔══════════════════════════════════════╗")
+			fmt.Println("  ║    STUNNEL CLOUDFLARE TUNNEL         ║")
+			fmt.Println("  ╚══════════════════════════════════════╝")
+			fmt.Println()
+			fmt.Printf("  Exposing: %s\n", localAddr)
+			fmt.Println("  Starting Cloudflare Tunnel...")
+			fmt.Println()
+
+			t := cloudflare.NewTunnel(localAddr)
+			if err := t.Start(); err != nil {
+				log.Fatal(err)
+			}
+			defer t.Stop()
+
+			fmt.Println("  ╔══════════════════════════════════════╗")
+			fmt.Println("  ║         TUNNEL ACTIVE                ║")
+			fmt.Println("  ╚══════════════════════════════════════╝")
+			fmt.Println()
+			fmt.Printf("  URL: %s\n", t.URL())
+			fmt.Println()
+			fmt.Println("  Share this URL to access your service")
+			fmt.Println("  Press Ctrl+C to stop")
+			fmt.Println()
+
+			// Wait for interrupt
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			<-sigCh
+
+			fmt.Println("\n  Stopping tunnel...")
+		},
+	}
+
+	cmd.Flags().StringVar(&localAddr, "local", "localhost:3000", "Local service to expose")
+
+	return cmd
 }
 
 func newVersionCmd() *cobra.Command {

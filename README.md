@@ -2,58 +2,51 @@
 
 A TCP tunnel tool for exposing local services through a relay server.
 
-## How It Works
+## Quick Start (No VPS Needed!)
 
-```
-[Local Machine] ──→ [Relay Server] ←── [Remote Machine]
-   (serve)            (bridge)           (connect)
-```
-
-Both machines connect to the relay. The relay matches them by secret and bridges the connection.
-
-## Quick Start
-
-### 1. Run relay server (on VPS)
+### Cloudflare Tunnel Mode
 
 ```bash
+# Expose local service to the internet
+stunnel tunnel --local :3000
+
+# Output:
+#   URL: https://abc123.trycloudflare.com
+#   Share this URL to access your service
+```
+
+That's it! No VPS, no domain, no config.
+
+## Other Modes
+
+### Relay Mode (Your Own VPS)
+
+```bash
+# On VPS
 stunnel relay --addr :7000
-```
 
-### 2. Expose local service
-
-```bash
+# On local machine
 stunnel serve --relay VPS_IP:7000 --local :3000
-```
+# Output: Secret: xK9mP2qR
 
-Output:
-```
-  ╔══════════════════════════════════════╗
-  ║       STUNNEL SERVE STARTED          ║
-  ╚══════════════════════════════════════╝
-
-  Secret: xK9mP2qR
-
-  On another machine, run:
-  stunnel connect --relay VPS_IP:7000 --secret xK9mP2qR
-```
-
-### 3. Connect from anywhere
-
-```bash
+# On another machine
 stunnel connect --relay VPS_IP:7000 --secret xK9mP2qR
 ```
 
-This pipes your stdin/stdout through the tunnel to the local service.
-
 ## Commands
 
+### `stunnel tunnel`
+Expose local service via Cloudflare Tunnel (free, no VPS needed).
+
+- `--local` - local service to expose (default `localhost:3000`)
+
 ### `stunnel relay`
-Run the relay server (typically on a VPS).
+Run relay server (on VPS).
 
 - `--addr` - listen address (default `:7000`)
 
 ### `stunnel serve`
-Expose a local service through the relay.
+Expose local service through relay.
 
 - `--relay` - relay server address (default `localhost:7000`)
 - `--local` - local service to expose (default `localhost:3000`)
