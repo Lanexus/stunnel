@@ -8,63 +8,60 @@ Connect like there is no firewall. No VPS needed.
 curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | bash
 ```
 
+## How It Works
+
+```
+[Server] → Signaling Server ← [Client]
+    ↓           ↓           ↓
+  -s secret   matches    -s secret
+    ↓           ↓           ↓
+    └───────────┴───────────┘
+        Direct Connection
+```
+
 ## Usage
 
-### Server (expose local service)
+### 1. Start Signaling Server (on VPS)
+
 ```bash
-stunnel -l -p 3000
+# Download signaling server
+wget https://github.com/Lanexus/stunnel/releases/download/v0.5.0/signaling-linux-amd64 -O /usr/local/bin/signaling
+chmod +x /usr/local/bin/signaling
+
+# Run signaling server
+signaling 8080
 ```
 
-Output:
-```
-  ╔══════════════════════════════════════╗
-  ║       STUNNEL SERVER                 ║
-  ╚══════════════════════════════════════╝
+### 2. Start Server (expose local service)
 
-  Secret: nGW_8dn8n24
-  Port:   3000
-
-  Starting tunnel...
-
-  ╔══════════════════════════════════════╗
-  ║       TUNNEL ACTIVE                  ║
-  ╚══════════════════════════════════════╝
-
-  URL: https://abc123.trycloudflare.com
-
-  Share this URL to access your service
-```
-
-### Client (access the service)
-Just open the URL in browser, or:
 ```bash
-curl https://abc123.trycloudflare.com
+stunnel -l -p 3000 --signaling http://VPS_IP:8080
+```
+
+### 3. Connect from Client
+
+```bash
+stunnel -s <secret> --signaling http://VPS_IP:8080
 ```
 
 ## Commands
 
 ```bash
-# Expose port 3000
-stunnel -l -p 3000
-
-# Expose with custom secret
-stunnel -l -p 3000 -s mysecret
-
 # Generate secret
 stunnel -g
 
-# Interactive shell
-stunnel -l --shell
-```
+# Server (expose port 3000)
+stunnel -l -p 3000 --signaling http://VPS_IP:8080
 
-## How It Works
+# Client (connect)
+stunnel -s <secret> --signaling http://VPS_IP:8080
 
-```
-[Your Computer] → Cloudflare Tunnel → [Internet]
-   (local:3000)    (*.trycloudflare.com)
-```
+# Server with shell
+stunnel -l --shell --signaling http://VPS_IP:8080
 
-No VPS needed. No port forwarding. Just works.
+# Client with shell
+stunnel -s <secret> --shell --signaling http://VPS_IP:8080
+```
 
 ## Build
 

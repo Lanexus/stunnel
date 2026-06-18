@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -10,15 +9,16 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"regexp"
-	"strings"
+	"runtime"
 	"sync"
 	"time"
+
+	"stunnel/internal/signaling"
 
 	"github.com/spf13/cobra"
 )
 
-var version = "0.4.0"
+var version = "0.5.0"
 
 func main() {
 	var listen bool
@@ -26,6 +26,7 @@ func main() {
 	var port string
 	var shell bool
 	var generate bool
+	var signalingServer string
 
 	rootCmd := &cobra.Command{
 		Use:   "stunnel",
@@ -42,9 +43,9 @@ func main() {
 			}
 
 			if listen {
-				runServer(secret, port, shell)
+				runServer(secret, port, shell, signalingServer)
 			} else {
-				runClient(secret, shell)
+				runClient(secret, shell, signalingServer)
 			}
 		},
 	}
@@ -54,6 +55,7 @@ func main() {
 	rootCmd.Flags().StringVarP(&port, "port", "p", "3000", "Port to expose")
 	rootCmd.Flags().BoolVar(&shell, "shell", false, "Interactive shell")
 	rootCmd.Flags().BoolVarP(&generate, "generate", "g", false, "Generate secret")
+	rootCmd.Flags().StringVar(&signalingServer, "signaling", "http://localhost:8080", "Signaling server address")
 
 	rootCmd.Execute()
 }
@@ -64,7 +66,10 @@ func generateSecret() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func runServer(secret, port string, shell bool) {
+func runServer(secret, port string, shell bool, signalingServer string) {
+	// Get public IP
+	ip := getPublicIP()
+
 	fmt.Println()
 	fmt.Println("  ╔══════════════════════════════════════╗")
 	fmt.Println("  ║       STUNNEL SERVER                 ║")
@@ -73,67 +78,51 @@ func runServer(secret, port string, shell bool) {
 	fmt.Printf("  Secret: %s\n", secret)
 	fmt.Printf("  Port:   %s\n", port)
 	fmt.Println()
-	fmt.Println("  Starting tunnel...")
+	fmt.Println("  Registering with signaling server...")
 	fmt.Println()
 
-	// Check/install cloudflared
-	cloudflared, err := ensureCloudflared()
+	// Register with signaling server
+	client := signaling.NewSignalingClient(signalingServer)
+	err := client.Register(secret, ip, port)
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		log.Printf("Warning: Failed to register: %v", err)
+		log.Printf("You can still use direct connection")
+	} else {
+		fmt.Println("  Registered successfully!")
 	}
 
-	// Start cloudflare tunnel
-	cmd := exec.Command(cloudflared, "tunnel", "--url", "http://localhost:"+port)
-	
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
-	
-	if err := cmd.Start(); err != nil {
-		log.Fatalf("Failed to start tunnel: %v", err)
+	fmt.Println()
+	fmt.Println("  Waiting for client connection...")
+	fmt.Println("  Press Ctrl+C to stop")
+	fmt.Println()
+
+	// Listen for incoming connection
+	addr := fmt.Sprintf(":%s", port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
 	}
+	defer ln.Close()
 
-	// Read output to find URL
-	urlCh := make(chan string, 1)
-	go func() {
-		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.Contains(line, "trycloudflare.com") {
-				re := regexp.MustCompile(`https://[a-zA-Z0-9-]+\.trycloudflare\.com`)
-				match := re.FindString(line)
-				if match != "" {
-					urlCh <- match
-					return
-				}
-			}
-		}
-	}()
+	fmt.Printf("  Listening on %s\n", addr)
 
-	select {
-	case url := <-urlCh:
-		fmt.Println("  ╔══════════════════════════════════════╗")
-		fmt.Println("  ║       TUNNEL ACTIVE                  ║")
-		fmt.Println("  ╚══════════════════════════════════════╝")
-		fmt.Println()
-		fmt.Printf("  URL: %s\n", url)
-		fmt.Println()
-		fmt.Println("  Share this URL to access your service")
-		fmt.Println()
-		fmt.Println("  Client command:")
-		fmt.Printf("    stunnel -s %s\n", secret)
-		fmt.Println()
-		fmt.Println("  Press Ctrl+C to stop")
-		fmt.Println()
-		
-		// Wait for interrupt
-		select {}
-		
-	case <-time.After(30 * time.Second):
-		log.Fatal("Timeout waiting for tunnel URL")
+	// Accept connection
+	conn, err := ln.Accept()
+	if err != nil {
+		log.Fatalf("Failed to accept: %v", err)
+	}
+	defer conn.Close()
+
+	fmt.Println("  Client connected!")
+
+	if shell {
+		handleShell(conn, true)
+	} else {
+		handlePipe(conn)
 	}
 }
 
-func runClient(secret string, shell bool) {
+func runClient(secret string, shell bool, signalingServer string) {
 	fmt.Println()
 	fmt.Println("  ╔══════════════════════════════════════╗")
 	fmt.Println("  ║       STUNNEL CLIENT                 ║")
@@ -141,58 +130,44 @@ func runClient(secret string, shell bool) {
 	fmt.Println()
 	fmt.Printf("  Secret: %s\n", secret)
 	fmt.Println()
-	fmt.Println("  To connect, you need the server URL")
-	fmt.Println("  Ask the server operator for the URL")
+	fmt.Println("  Looking up server...")
 	fmt.Println()
-	fmt.Println("  Then open it in your browser or use:")
-	fmt.Printf("    curl <server-url>\n")
+
+	// Lookup server
+	client := signaling.NewSignalingClient(signalingServer)
+	info, err := client.Lookup(secret)
+	if err != nil {
+		log.Fatalf("Failed to find server: %v", err)
+	}
+
+	addr := fmt.Sprintf("%s:%s", info.IP, info.Port)
+	fmt.Printf("  Found server at %s\n", addr)
+	fmt.Println("  Connecting...")
 	fmt.Println()
+
+	// Connect to server
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		log.Fatalf("Failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	fmt.Println("  Connected!")
+
+	if shell {
+		handleShell(conn, false)
+	} else {
+		handlePipe(conn)
+	}
 }
 
-func ensureCloudflared() (string, error) {
-	// Check if already installed
-	if path, err := exec.LookPath("cloudflared"); err == nil {
-		return path, nil
+func getPublicIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "0.0.0.0"
 	}
-
-	// Check local binary
-	localBin := "./cloudflared"
-	if _, err := os.Stat(localBin); err == nil {
-		return localBin, nil
-	}
-
-	// Download
-	log.Printf("Downloading cloudflared...")
-	return downloadCloudflared()
-}
-
-func downloadCloudflared() (string, error) {
-	// Detect OS
-	osName := "linux"
-	if _, err := exec.LookPath("cmd.exe"); err == nil {
-		osName = "windows"
-	}
-
-	var url string
-	switch osName {
-	case "linux":
-		url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-	case "windows":
-		url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-	default:
-		return "", fmt.Errorf("unsupported OS: %s", osName)
-	}
-
-	// Download
-	cmd := exec.Command("curl", "-sL", url, "-o", "cloudflared")
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("download failed: %w", err)
-	}
-
-	// Make executable
-	os.Chmod("cloudflared", 0755)
-
-	return "./cloudflared", nil
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
 func handleShell(conn net.Conn, isServer bool) {
@@ -201,7 +176,14 @@ func handleShell(conn net.Conn, isServer bool) {
 		if shell == "" {
 			shell = "/bin/sh"
 		}
-		cmd := exec.Command(shell, "-i")
+		
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("cmd.exe")
+		} else {
+			cmd = exec.Command(shell, "-i")
+		}
+		
 		cmd.Stdin = conn
 		cmd.Stdout = conn
 		cmd.Stderr = conn
@@ -215,6 +197,16 @@ func handleShell(conn net.Conn, isServer bool) {
 		io.Copy(conn, os.Stdin)
 		<-done
 	}
+}
+
+func handlePipe(conn net.Conn) {
+	done := make(chan struct{})
+	go func() {
+		io.Copy(os.Stdout, conn)
+		close(done)
+	}()
+	io.Copy(conn, os.Stdin)
+	<-done
 }
 
 func bridge(a, b net.Conn) {
