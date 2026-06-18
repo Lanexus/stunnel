@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -8,283 +9,218 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 )
 
-var (
-	version = "0.3.0"
-	defaultRelay = "relay.stunnel.io:7000"
-)
+var version = "0.4.0"
 
 func main() {
-	rootCmd := &cobra.Command{
-		Use:   "stunnel",
-		Short: "Connect like there is no firewall. Securely.",
-		Long: `Stunnel allows two users behind NAT/Firewall to establish a TCP connection.
-Both users use the same secret to find each other through the relay network.`,
-	}
-
-	var secret string
 	var listen bool
-	var relay string
+	var secret string
+	var port string
 	var shell bool
 	var generate bool
-	var port string
-	var verbose bool
 
-	rootCmd.Flags().StringVarP(&secret, "secret", "s", "", "Shared secret (password)")
+	rootCmd := &cobra.Command{
+		Use:   "stunnel",
+		Short: "Connect like there is no firewall",
+		Long:  "Expose local services to the internet. No VPS needed.",
+		Run: func(cmd *cobra.Command, args []string) {
+			if generate {
+				fmt.Println(generateSecret())
+				return
+			}
+
+			if secret == "" {
+				secret = generateSecret()
+			}
+
+			if listen {
+				runServer(secret, port, shell)
+			} else {
+				runClient(secret, shell)
+			}
+		},
+	}
+
 	rootCmd.Flags().BoolVarP(&listen, "listen", "l", false, "Listen mode (server)")
-	rootCmd.Flags().StringVarP(&relay, "relay", "r", defaultRelay, "Relay server address")
-	rootCmd.Flags().BoolVar(&shell, "shell", false, "Interactive shell mode")
-	rootCmd.Flags().BoolVarP(&generate, "generate", "g", false, "Generate random secret")
-	rootCmd.Flags().StringVarP(&port, "port", "p", "", "Local port to forward")
-	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
+	rootCmd.Flags().StringVarP(&secret, "secret", "s", "", "Shared secret")
+	rootCmd.Flags().StringVarP(&port, "port", "p", "3000", "Port to expose")
+	rootCmd.Flags().BoolVar(&shell, "shell", false, "Interactive shell")
+	rootCmd.Flags().BoolVarP(&generate, "generate", "g", false, "Generate secret")
 
-	rootCmd.Run = func(cmd *cobra.Command, args []string) {
-		if generate {
-			fmt.Println(generateSecret())
-			return
-		}
-
-		if secret == "" {
-			fmt.Println("Error: --secret (-s) is required")
-			fmt.Println("")
-			fmt.Println("Usage:")
-			fmt.Println("  stunnel -s <secret> -l          # Listen (server)")
-			fmt.Println("  stunnel -s <secret>             # Connect (client)")
-			fmt.Println("  stunnel -s <secret> -l --shell  # Listen with shell")
-			fmt.Println("  stunnel -s <secret> --shell     # Connect with shell")
-			fmt.Println("  stunnel -g                      # Generate secret")
-			os.Exit(1)
-		}
-
-		if listen {
-			runServer(secret, relay, shell, port, verbose)
-		} else {
-			runClient(secret, relay, shell, port, verbose)
-		}
-	}
-
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
-	}
+	rootCmd.Execute()
 }
 
 func generateSecret() string {
-	b := make([]byte, 12)
+	b := make([]byte, 8)
 	rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func runServer(secret, relay string, shell bool, port string, verbose bool) {
-	if verbose {
-		log.Printf("Connecting to relay %s...", relay)
-	}
-
-	conn, err := net.DialTimeout("tcp", relay, 10*time.Second)
-	if err != nil {
-		log.Fatalf("Cannot connect to relay: %v", err)
-	}
-	defer conn.Close()
-
-	// Register as server
-	msg := fmt.Sprintf("REGISTER %s\n", secret)
-	if _, err := conn.Write([]byte(msg)); err != nil {
-		log.Fatalf("Failed to register: %v", err)
-	}
-
-	// Read response
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
-	if err != nil {
-		log.Fatalf("Failed to read response: %v", err)
-	}
-
-	response := string(buf[:n])
-	if verbose {
-		log.Printf("Relay response: %s", response)
-	}
-
+func runServer(secret, port string, shell bool) {
 	fmt.Println()
 	fmt.Println("  ╔══════════════════════════════════════╗")
-	fmt.Println("  ║       STUNNEL SERVER ACTIVE          ║")
+	fmt.Println("  ║       STUNNEL SERVER                 ║")
+	fmt.Println("  ╚══════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Printf("  Secret: %s\n", secret)
+	fmt.Printf("  Port:   %s\n", port)
+	fmt.Println()
+	fmt.Println("  Starting tunnel...")
+	fmt.Println()
+
+	// Check/install cloudflared
+	cloudflared, err := ensureCloudflared()
+	if err != nil {
+		log.Fatalf("Error: %v", err)
+	}
+
+	// Start cloudflare tunnel
+	cmd := exec.Command(cloudflared, "tunnel", "--url", "http://localhost:"+port)
+	
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+	
+	if err := cmd.Start(); err != nil {
+		log.Fatalf("Failed to start tunnel: %v", err)
+	}
+
+	// Read output to find URL
+	urlCh := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.Contains(line, "trycloudflare.com") {
+				re := regexp.MustCompile(`https://[a-zA-Z0-9-]+\.trycloudflare\.com`)
+				match := re.FindString(line)
+				if match != "" {
+					urlCh <- match
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case url := <-urlCh:
+		fmt.Println("  ╔══════════════════════════════════════╗")
+		fmt.Println("  ║       TUNNEL ACTIVE                  ║")
+		fmt.Println("  ╚══════════════════════════════════════╝")
+		fmt.Println()
+		fmt.Printf("  URL: %s\n", url)
+		fmt.Println()
+		fmt.Println("  Share this URL to access your service")
+		fmt.Println()
+		fmt.Println("  Client command:")
+		fmt.Printf("    stunnel -s %s\n", secret)
+		fmt.Println()
+		fmt.Println("  Press Ctrl+C to stop")
+		fmt.Println()
+		
+		// Wait for interrupt
+		select {}
+		
+	case <-time.After(30 * time.Second):
+		log.Fatal("Timeout waiting for tunnel URL")
+	}
+}
+
+func runClient(secret string, shell bool) {
+	fmt.Println()
+	fmt.Println("  ╔══════════════════════════════════════╗")
+	fmt.Println("  ║       STUNNEL CLIENT                 ║")
 	fmt.Println("  ╚══════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Printf("  Secret: %s\n", secret)
 	fmt.Println()
-	fmt.Println("  Waiting for connection...")
-	fmt.Println("  Press Ctrl+C to stop")
+	fmt.Println("  To connect, you need the server URL")
+	fmt.Println("  Ask the server operator for the URL")
 	fmt.Println()
-
-	// Wait for client connection
-	n, err = conn.Read(buf)
-	if err != nil {
-		log.Fatalf("Connection lost: %v", err)
-	}
-
-	response = string(buf[:n])
-	if verbose {
-		log.Printf("Client connected: %s", response)
-	}
-
-	fmt.Println("  Client connected!")
-
-	if shell {
-		handleShell(conn, true)
-	} else if port != "" {
-		handlePortForward(conn, port, true)
-	} else {
-		handlePipe(conn)
-	}
+	fmt.Println("  Then open it in your browser or use:")
+	fmt.Printf("    curl <server-url>\n")
+	fmt.Println()
 }
 
-func runClient(secret, relay string, shell bool, port string, verbose bool) {
-	if verbose {
-		log.Printf("Connecting to relay %s...", relay)
+func ensureCloudflared() (string, error) {
+	// Check if already installed
+	if path, err := exec.LookPath("cloudflared"); err == nil {
+		return path, nil
 	}
 
-	conn, err := net.DialTimeout("tcp", relay, 10*time.Second)
-	if err != nil {
-		log.Fatalf("Cannot connect to relay: %v", err)
-	}
-	defer conn.Close()
-
-	// Connect as client
-	msg := fmt.Sprintf("CONNECT %s\n", secret)
-	if _, err := conn.Write([]byte(msg)); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
+	// Check local binary
+	localBin := "./cloudflared"
+	if _, err := os.Stat(localBin); err == nil {
+		return localBin, nil
 	}
 
-	// Read response
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
-	if err != nil {
-		log.Fatalf("Failed to read response: %v", err)
+	// Download
+	log.Printf("Downloading cloudflared...")
+	return downloadCloudflared()
+}
+
+func downloadCloudflared() (string, error) {
+	// Detect OS
+	osName := "linux"
+	if _, err := exec.LookPath("cmd.exe"); err == nil {
+		osName = "windows"
 	}
 
-	response := string(buf[:n])
-	if verbose {
-		log.Printf("Relay response: %s", response)
+	var url string
+	switch osName {
+	case "linux":
+		url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+	case "windows":
+		url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+	default:
+		return "", fmt.Errorf("unsupported OS: %s", osName)
 	}
 
-	fmt.Println("  Connected to server!")
-
-	if shell {
-		handleShell(conn, false)
-	} else if port != "" {
-		handlePortForward(conn, port, false)
-	} else {
-		handlePipe(conn)
+	// Download
+	cmd := exec.Command("curl", "-sL", url, "-o", "cloudflared")
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("download failed: %w", err)
 	}
+
+	// Make executable
+	os.Chmod("cloudflared", 0755)
+
+	return "./cloudflared", nil
 }
 
 func handleShell(conn net.Conn, isServer bool) {
-	fmt.Println("  Starting interactive shell...")
-	fmt.Println("  Type 'exit' to quit")
-	fmt.Println()
-
 	if isServer {
-		// Server: execute commands
-		handleShellServer(conn)
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		cmd := exec.Command(shell, "-i")
+		cmd.Stdin = conn
+		cmd.Stdout = conn
+		cmd.Stderr = conn
+		cmd.Run()
 	} else {
-		// Client: send commands
-		handleShellClient(conn)
+		done := make(chan struct{})
+		go func() {
+			io.Copy(os.Stdout, conn)
+			close(done)
+		}()
+		io.Copy(conn, os.Stdin)
+		<-done
 	}
-}
-
-func handleShellServer(conn net.Conn) {
-	// Create shell
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-
-	cmd := createShellCommand(shell)
-	cmd.Stdin = conn
-	cmd.Stdout = conn
-	cmd.Stderr = conn
-
-	if err := cmd.Run(); err != nil {
-		log.Printf("Shell exited: %v", err)
-	}
-}
-
-func handleShellClient(conn net.Conn) {
-	done := make(chan struct{})
-	
-	go func() {
-		io.Copy(os.Stdout, conn)
-		close(done)
-	}()
-	
-	io.Copy(conn, os.Stdin)
-	<-done
-}
-
-func handlePortForward(conn net.Conn, port string, isServer bool) {
-	addr := fmt.Sprintf("localhost:%s", port)
-	
-	if isServer {
-		// Listen on local port
-		ln, err := net.Listen("tcp", addr)
-		if err != nil {
-			log.Fatalf("Cannot listen on %s: %v", addr, err)
-		}
-		defer ln.Close()
-
-		fmt.Printf("  Forwarding port %s through tunnel\n", port)
-
-		for {
-			localConn, err := ln.Accept()
-			if err != nil {
-				continue
-			}
-			go func() {
-				defer localConn.Close()
-				bridge(conn, localConn)
-			}()
-		}
-	} else {
-		// Connect to local port
-		localConn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		if err != nil {
-			log.Fatalf("Cannot connect to %s: %v", addr, err)
-		}
-		defer localConn.Close()
-
-		fmt.Printf("  Forwarding port %s through tunnel\n", port)
-		bridge(conn, localConn)
-	}
-}
-
-func handlePipe(conn net.Conn) {
-	done := make(chan struct{})
-	
-	go func() {
-		io.Copy(os.Stdout, conn)
-		close(done)
-	}()
-	
-	io.Copy(conn, os.Stdin)
-	<-done
 }
 
 func bridge(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		io.Copy(b, a)
-	}()
-
-	go func() {
-		defer wg.Done()
-		io.Copy(a, b)
-	}()
-
+	go func() { defer wg.Done(); io.Copy(b, a) }()
+	go func() { defer wg.Done(); io.Copy(a, b) }()
 	wg.Wait()
 }
