@@ -4,31 +4,48 @@ A TCP tunnel tool for exposing local services through a relay server.
 
 ## Usage
 
-### Server (on VPS)
+### 1. Start server (on VPS)
 
 ```bash
-stunnel server --addr :7000 --public-addr :8080 --secret mysecret
+stunnel serve
 ```
 
-- `--addr` - address to listen for client connections (default `:7000`)
-- `--public-addr` - address for user-facing connections (default `:8080`)
-- `--secret` - shared authentication secret
+Output:
+```
+  ╔══════════════════════════════════════╗
+  ║       STUNNEL SERVER STARTED         ║
+  ╚══════════════════════════════════════╝
 
-### Client (on local machine)
+  Key: MTcyLjI1LjY3LjIwMjo4MDgwOnJJVHJQT2lmMU4zQ0tRenNPdkE1d3c
+
+  On your local machine, run:
+  stunnel connect MTcyLjI1LjY3LjIwMjo4MDgwOnJJVHJQT2lmMU4zQ0tRenNPdkE1d3c --local :PORT
+```
+
+### 2. Connect from local machine
+
+Copy the key from step 1 and run:
 
 ```bash
-stunnel client --server vps-ip:7000 --secret mysecret --local :3000
+stunnel connect <PASTE_KEY_HERE> --local :3000
 ```
 
-- `--server` - address of the stunnel server
-- `--secret` - shared authentication secret (must match server)
-- `--local` - local address to tunnel traffic to
+This exposes your local port 3000 through the server's public port.
 
-### User (any machine)
+### 3. Access from anywhere
 
 ```bash
-curl vps-ip:8080
+curl http://vps-ip:8080
 ```
+
+## Options
+
+### `stunnel serve`
+- `--addr` - address for client connections (default `:7000`)
+- `--public-addr` - public-facing address (default `:8080`)
+
+### `stunnel connect <key>`
+- `--local` - local service to expose (default `localhost:3000`)
 
 ## Build
 
