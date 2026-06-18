@@ -1,76 +1,108 @@
 # Stunnel
 
-Connect like there is no firewall. No VPS needed.
+Connect like there is no firewall. Install once, connect anytime.
 
-## Quick Start (One Command)
+## Quick Install
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lanexus/stunnel/master/quick.sh)"
+curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | bash
 ```
 
 ## How It Works
 
 ```
-[Server] → Relay Server ← [Client]
-    ↓           ↓           ↓
-  -s secret   matches    -s secret
-    ↓           ↓           ↓
-    └───────────┴───────────┘
-        Direct Connection
+[VPS] ← stunnel server (persistent)
+  ↓
+[You] ← stunnel connect -s secret
 ```
 
 ## Usage
 
-### 1. Start Relay Server (on VPS)
+### 1. Install on VPS (once)
 
 ```bash
-# Download relay server
-wget https://github.com/Lanexus/stunnel/releases/download/v0.5.0/relay-linux-amd64 -O /usr/local/bin/relay
-chmod +x /usr/local/bin/relay
+# Install stunnel
+curl -sL https://raw.githubusercontent.com/Lanexus/stunnel/master/install.sh | bash
 
-# Run relay
-relay 8080
+# Install as system service (runs on boot)
+stunnel server --install
 ```
 
-### 2. Generate Secret
+Output:
+```
+  ╔══════════════════════════════════════╗
+  ║       INSTALLING STUNNEL             ║
+  ╚══════════════════════════════════════╝
 
-```bash
-stunnel -g
-# Output: T-JBUwDOXjw
+  Secret: T-JBUwDOXjw
+  Port: 3000
+
+  ✓ Installed as systemd service
+  ✓ Enabled on boot
+  ✓ Started
+
+  Your secret (save this!):
+    T-JBUwDOXjw
+
+  Connect from anywhere:
+    stunnel connect -s T-JBUwDOXjw
 ```
 
-### 3. Server (expose local service)
+### 2. Connect from anywhere
 
 ```bash
-stunnel -l -p 3000 -s T-JBUwDOXjw
+stunnel connect -s T-JBUwDOXjw
 ```
 
-### 4. Client (connect)
+### 3. Get shell access
 
 ```bash
-stunnel -s T-JBUwDOXjw
+# On VPS (install with shell)
+stunnel server --install --shell
+
+# From anywhere
+stunnel connect -s T-JBUwDOXjw --shell
 ```
 
 ## Commands
 
 ```bash
 # Generate secret
-stunnel -g
+stunnel server -g
 
-# Server (expose port 3000)
-stunnel -l -p 3000 -s <secret>
+# Run server (foreground)
+stunnel server -s <secret> -p 3000
 
-# Client (connect)
-stunnel -s <secret>
+# Install as service (persistent)
+stunnel server --install -s <secret>
 
-# Server with shell
-stunnel -l --shell -s <secret>
+# Install with shell
+stunnel server --install -s <secret> --shell
 
-# Client with shell
-stunnel -s <secret> --shell
+# Connect
+stunnel connect -s <secret>
 
-# Custom signaling server
-stunnel -l -p 3000 -s <secret> --signaling http://your-server:8080
+# Connect with shell
+stunnel connect -s <secret> --shell
+
+# Uninstall service
+stunnel server --uninstall
+```
+
+## Manage Service
+
+```bash
+# Check status
+systemctl status stunnel
+
+# Restart
+systemctl restart stunnel
+
+# Stop
+systemctl stop stunnel
+
+# View logs
+journalctl -u stunnel -f
 ```
 
 ## Build

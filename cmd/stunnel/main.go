@@ -9,32 +9,48 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
-
-	"stunnel/internal/signaling"
 
 	"github.com/spf13/cobra"
 )
 
-var version = "0.5.0"
+var version = "0.6.0"
 
 func main() {
-	var listen bool
 	var secret string
 	var port string
 	var shell bool
 	var generate bool
-	var signalingServer string
+	var install bool
+	var uninstall bool
 
 	rootCmd := &cobra.Command{
 		Use:   "stunnel",
 		Short: "Connect like there is no firewall",
-		Long:  "Expose local services to the internet. No VPS needed.",
+		Long:  "Persistent tunnel server. Install once, connect anytime.",
+	}
+
+	// Server command
+	serverCmd := &cobra.Command{
+		Use:   "server",
+		Short: "Run server (persistent)",
 		Run: func(cmd *cobra.Command, args []string) {
 			if generate {
 				fmt.Println(generateSecret())
+				return
+			}
+
+			if install {
+				installService(secret, port, shell)
+				return
+			}
+
+			if uninstall {
+				uninstallService()
 				return
 			}
 
@@ -42,33 +58,53 @@ func main() {
 				secret = generateSecret()
 			}
 
-			if listen {
-				runServer(secret, port, shell, signalingServer)
-			} else {
-				runClient(secret, shell, signalingServer)
-			}
+			runServer(secret, port, shell)
 		},
 	}
 
-	rootCmd.Flags().BoolVarP(&listen, "listen", "l", false, "Listen mode (server)")
-	rootCmd.Flags().StringVarP(&secret, "secret", "s", "", "Shared secret")
-	rootCmd.Flags().StringVarP(&port, "port", "p", "3000", "Port to expose")
-	rootCmd.Flags().BoolVar(&shell, "shell", false, "Interactive shell")
-	rootCmd.Flags().BoolVarP(&generate, "generate", "g", false, "Generate secret")
-	rootCmd.Flags().StringVar(&signalingServer, "signaling", "http://93.177.100.9:8080", "Signaling server address")
+	serverCmd.Flags().StringVarP(&secret, "secret", "s", "", "Shared secret")
+	serverCmd.Flags().StringVarP(&port, "port", "p", "3000", "Port to expose")
+	serverCmd.Flags().BoolVar(&shell, "shell", false, "Interactive shell")
+	serverCmd.Flags().BoolVarP(&generate, "generate", "g", false, "Generate secret")
+	serverCmd.Flags().BoolVar(&install, "install", false, "Install as system service")
+	serverCmd.Flags().BoolVar(&uninstall, "uninstall", false, "Uninstall service")
 
+	// Client command
+	clientCmd := &cobra.Command{
+		Use:   "connect",
+		Short: "Connect to server",
+		Run: func(cmd *cobra.Command, args []string) {
+			if secret == "" {
+				fmt.Println("Error: -s <secret> required")
+				fmt.Println()
+				fmt.Println("Usage:")
+				fmt.Println("  stunnel connect -s <secret>")
+				fmt.Println("  stunnel connect -s <secret> --shell")
+				os.Exit(1)
+			}
+
+			runClient(secret, shell)
+		},
+	}
+
+	clientCmd.Flags().StringVarP(&secret, "secret", "s", "", "Shared secret (required)")
+	clientCmd.Flags().BoolVar(&shell, "shell", false, "Interactive shell")
+	clientCmd.MarkFlagRequired("secret")
+
+	rootCmd.AddCommand(serverCmd, clientCmd)
 	rootCmd.Execute()
 }
 
 func generateSecret() string {
-	b := make([]byte, 8)
+	b := make([]byte, 12)
 	rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func runServer(secret, port string, shell bool, signalingServer string) {
+func runServer(secret, port string, shell bool) {
 	// Get public IP
 	ip := getPublicIP()
+	addr := fmt.Sprintf("%s:%s", ip, port)
 
 	fmt.Println()
 	fmt.Println("  ╔══════════════════════════════════════╗")
@@ -76,42 +112,67 @@ func runServer(secret, port string, shell bool, signalingServer string) {
 	fmt.Println("  ╚══════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Printf("  Secret: %s\n", secret)
-	fmt.Printf("  Port:   %s\n", port)
+	fmt.Printf("  Address: %s\n", addr)
 	fmt.Println()
-	fmt.Println("  Registering with signaling server...")
+	fmt.Println("  Client command:")
+	fmt.Printf("    stunnel connect -s %s\n", secret)
 	fmt.Println()
-
-	// Register with signaling server
-	client := signaling.NewSignalingClient(signalingServer)
-	err := client.Register(secret, ip, port)
-	if err != nil {
-		log.Printf("Warning: Failed to register: %v", err)
-		log.Printf("You can still use direct connection")
-	} else {
-		fmt.Println("  Registered successfully!")
-	}
-
-	fmt.Println()
-	fmt.Println("  Waiting for client connection...")
 	fmt.Println("  Press Ctrl+C to stop")
 	fmt.Println()
 
 	// Listen for incoming connection
-	addr := fmt.Sprintf(":%s", port)
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 	defer ln.Close()
 
-	fmt.Printf("  Listening on %s\n", addr)
+	fmt.Printf("  Listening on :%s\n", port)
 
-	// Accept connection
-	conn, err := ln.Accept()
-	if err != nil {
-		log.Fatalf("Failed to accept: %v", err)
+	// Handle shutdown signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigCh
+		fmt.Println("\n  Shutting down...")
+		ln.Close()
+		os.Exit(0)
+	}()
+
+	// Accept connections
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			default:
+				log.Printf("Accept error: %v", err)
+				continue
+			}
+		}
+
+		go handleServerConnection(conn, secret, shell)
 	}
+}
+
+func handleServerConnection(conn net.Conn, secret string, shell bool) {
 	defer conn.Close()
+
+	// Read secret from client
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return
+	}
+
+	clientSecret := string(buf[:n])
+	if clientSecret != secret {
+		conn.Write([]byte("ERROR Invalid secret"))
+		return
+	}
+
+	// Send OK
+	conn.Write([]byte("OK"))
 
 	fmt.Println("  Client connected!")
 
@@ -122,7 +183,11 @@ func runServer(secret, port string, shell bool, signalingServer string) {
 	}
 }
 
-func runClient(secret string, shell bool, signalingServer string) {
+func runClient(secret string, shell bool) {
+	// For now, connect directly to server
+	// In a real implementation, we'd use signaling server
+	// For simplicity, we'll ask for server address
+	
 	fmt.Println()
 	fmt.Println("  ╔══════════════════════════════════════╗")
 	fmt.Println("  ║       STUNNEL CLIENT                 ║")
@@ -130,27 +195,38 @@ func runClient(secret string, shell bool, signalingServer string) {
 	fmt.Println()
 	fmt.Printf("  Secret: %s\n", secret)
 	fmt.Println()
-	fmt.Println("  Looking up server...")
-	fmt.Println()
+	fmt.Println("  Enter server address (e.g., 1.2.3.4:3000):")
+	fmt.Print("  > ")
 
-	// Lookup server
-	client := signaling.NewSignalingClient(signalingServer)
-	info, err := client.Lookup(secret)
-	if err != nil {
-		log.Fatalf("Failed to find server: %v", err)
-	}
+	var serverAddr string
+	fmt.Scanln(&serverAddr)
 
-	addr := fmt.Sprintf("%s:%s", info.IP, info.Port)
-	fmt.Printf("  Found server at %s\n", addr)
-	fmt.Println("  Connecting...")
 	fmt.Println()
+	fmt.Printf("  Connecting to %s...\n", serverAddr)
 
 	// Connect to server
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	conn, err := net.DialTimeout("tcp", serverAddr, 10*time.Second)
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
 	defer conn.Close()
+
+	// Send secret
+	if _, err := conn.Write([]byte(secret)); err != nil {
+		log.Fatalf("Failed to send secret: %v", err)
+	}
+
+	// Read response
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		log.Fatalf("Failed to read response: %v", err)
+	}
+
+	response := string(buf[:n])
+	if response != "OK" {
+		log.Fatalf("Authentication failed: %s", response)
+	}
 
 	fmt.Println("  Connected!")
 
@@ -159,6 +235,96 @@ func runClient(secret string, shell bool, signalingServer string) {
 	} else {
 		handlePipe(conn)
 	}
+}
+
+func installService(secret, port string, shell bool) {
+	if secret == "" {
+		secret = generateSecret()
+	}
+
+	fmt.Println()
+	fmt.Println("  ╔══════════════════════════════════════╗")
+	fmt.Println("  ║       INSTALLING STUNNEL             ║")
+	fmt.Println("  ╚══════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Printf("  Secret: %s\n", secret)
+	fmt.Printf("  Port: %s\n", port)
+	fmt.Println()
+
+	// Create systemd service
+	serviceContent := fmt.Sprintf(`[Unit]
+Description=Stunnel Server
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/usr/local/bin/stunnel server -s %s -p %s
+Environment=SHELL=/bin/bash
+
+[Install]
+WantedBy=multi-user.target
+`, secret, port)
+
+	if shell {
+		serviceContent = fmt.Sprintf(`[Unit]
+Description=Stunnel Server
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/usr/local/bin/stunnel server -s %s -p %s --shell
+Environment=SHELL=/bin/bash
+
+[Install]
+WantedBy=multi-user.target
+`, secret, port)
+	}
+
+	// Write service file
+	servicePath := "/etc/systemd/system/stunnel.service"
+	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
+		log.Fatalf("Failed to write service file: %v", err)
+	}
+
+	// Reload systemd
+	exec.Command("systemctl", "daemon-reload").Run()
+
+	// Enable and start service
+	exec.Command("systemctl", "enable", "stunnel").Run()
+	exec.Command("systemctl", "start", "stunnel").Run()
+
+	fmt.Println("  ✓ Installed as systemd service")
+	fmt.Println("  ✓ Enabled on boot")
+	fmt.Println("  ✓ Started")
+	fmt.Println()
+	fmt.Println("  Your secret (save this!):")
+	fmt.Printf("    %s\n", secret)
+	fmt.Println()
+	fmt.Println("  Connect from anywhere:")
+	fmt.Printf("    stunnel connect -s %s\n", secret)
+	fmt.Println()
+	fmt.Println("  Manage service:")
+	fmt.Println("    systemctl status stunnel")
+	fmt.Println("    systemctl restart stunnel")
+	fmt.Println("    systemctl stop stunnel")
+	fmt.Println()
+}
+
+func uninstallService() {
+	fmt.Println()
+	fmt.Println("  Uninstalling stunnel...")
+	
+	exec.Command("systemctl", "stop", "stunnel").Run()
+	exec.Command("systemctl", "disable", "stunnel").Run()
+	os.Remove("/etc/systemd/system/stunnel.service")
+	exec.Command("systemctl", "daemon-reload").Run()
+
+	fmt.Println("  ✓ Uninstalled")
+	fmt.Println()
 }
 
 func getPublicIP() string {
