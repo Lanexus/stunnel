@@ -232,7 +232,7 @@ do_connect() {
     echo -e "  ${YELLOW}Connecting to ${server}...${NC}"
     
     # Connect
-    ${BINARY_NAME} connect -s "${secret}" -a "${server}"
+    ${BINARY_NAME} connect --secret "${secret}" --addr "${server}"
 }
 
 # Main
